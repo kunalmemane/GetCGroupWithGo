@@ -147,7 +147,9 @@ func main() {
 				cgroupPaths["memory"] = path
 			}
 		} else if cgroupVer == CgroupV2 {
-			if _, ok := cgroupPaths["unified"]; !ok && path != "/" {
+			// In v2, the path is unified. Store the first non-empty path found.
+			// The root cgroup path "/" is valid for cgroup v2.
+			if _, ok := cgroupPaths["unified"]; !ok {
 				cgroupPaths["unified"] = path
 			}
 		}
