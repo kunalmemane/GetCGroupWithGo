@@ -1,323 +1,228 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const (
-	cgroupV1Root = "/sys/fs/cgroup"
-	cgroupV2Root = "/sys/fs/cgroup" // cgroup v2 uses a unified hierarchy under this root
-	samplePeriod = 2 * time.Second  // Time to wait between CPU usage readings
+	// Common cgroup mount point for v2
+	cgroupV2Mountpoint = "/sys/fs/cgroup"
+	// Typical cgroup mount point for v1 CPU controller
+	cgroupV1Mountpoint = "/sys/fs/cgroup/cpu,cpuacct"
+
+	// cgroup v2 filenames
+	cpuMaxV2Filename    = "cpu.max"
+	cpuWeightV2Filename = "cpu.weight" // While not strictly asked, good to know
+
+	// cgroup v1 filenames
+	cpuQuotaV1Filename  = "cpu.cfs_quota_us"
+	cpuPeriodV1Filename = "cpu.cfs_period_us"
+	cpuSharesV1Filename = "cpu.shares"
+
+	port = ":8080" // Port the web server will listen on
 )
 
-// CgroupVersion represents the detected cgroup version
-type CgroupVersion int
-
-const (
-	UnknownCgroup CgroupVersion = iota
-	CgroupV1
-	CgroupV2
-)
-
-func (cv CgroupVersion) String() string {
-	switch cv {
-	case CgroupV1:
-		return "cgroup v1"
-	case CgroupV2:
-		return "cgroup v2"
-	default:
-		return "unknown cgroup version"
-	}
+// CgroupInfo holds the parsed CPU limit information
+type CgroupInfo struct {
+	CgroupVersion          string
+	CPUMax                 string // For v2: cpu.max, For v1: calculated quota in microseconds
+	CPUPeriod              string // For v2: from cpu.max, For v1: cpu.cfs_period_us
+	CPUShares              string // For v1: cpu.shares, For v2: n/a
+	CPUWeight              string // For v2: cpu.weight, For v1: n/a
+	BurstableCPUPercentage string
+	Error                  string
 }
 
-// detectCgroupVersion tries to determine if the system is using cgroup v1 or v2
-func detectCgroupVersion() CgroupVersion {
-	// Check for cgroup v2 unified hierarchy indicator
-	if _, err := os.Stat(filepath.Join(cgroupV2Root, "cgroup.controllers")); err == nil {
-		return CgroupV2
+// detectCgroupVersion checks which cgroup version is active for the current process
+func detectCgroupVersion() string {
+	// Check for cgroup v2 unified hierarchy
+	// If /sys/fs/cgroup/cgroup.controllers exists and is readable, it's likely v2
+	if _, err := os.Stat(filepath.Join(cgroupV2Mountpoint, "cgroup.controllers")); err == nil {
+		return "v2"
 	}
-	// Check for cgroup v1 specific controllers (e.g., cpu, memory)
-	if _, err := os.Stat(filepath.Join(cgroupV1Root, "cpu")); err == nil {
-		return CgroupV1
+	// Check for cgroup v1 cpuacct controller
+	if _, err := os.Stat(filepath.Join(cgroupV1Mountpoint, cpuQuotaV1Filename)); err == nil {
+		return "v1"
 	}
-	return UnknownCgroup
+	return "unknown"
 }
 
-// readCgroupFile reads the content of a cgroup file and returns it as a string
-func readCgroupFile(path string) (string, error) {
-	content, err := ioutil.ReadFile(path)
+// getCPUMaxInfoV2 reads CPU limits from cgroup v2 files
+func getCPUMaxInfoV2() CgroupInfo {
+	info := CgroupInfo{CgroupVersion: "v2"}
+	cpuMaxPath := filepath.Join(cgroupV2Mountpoint, cpuMaxV2Filename)
+
+	content, err := ioutil.ReadFile(cpuMaxPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read cgroup file %s: %w", path, err)
+		info.Error = fmt.Sprintf("Error reading %s: %v", cpuMaxPath, err)
+		return info
 	}
-	return strings.TrimSpace(string(content)), nil
-}
 
-// parseCgroupLine parses a line from /proc/self/cgroup and returns the controller and path
-func parseCgroupLine(line string) (string, string) {
-	parts := strings.SplitN(line, ":", 3)
-	if len(parts) != 3 {
-		return "", ""
+	parts := strings.Fields(string(content))
+	if len(parts) < 2 {
+		info.Error = fmt.Sprintf("Error: Unexpected format in %s: %s", cpuMaxPath, string(content))
+		return info
 	}
-	return parts[1], parts[2] // controllers, path
-}
 
-// bytesToMiB converts bytes to MiB
-func bytesToMiB(bytes uint64) float64 {
-	return float64(bytes) / 1024 / 1024
-}
+	maxValueStr := parts[0]
+	periodStr := parts[1]
 
-// getCPUUsageV1 reads cumulative CPU usage from cpuacct.usage (nanoseconds)
-func getCPUUsageV1(cpuPath string) (uint64, error) {
-	fullPath := filepath.Join(cgroupV1Root, "cpu", cpuPath, "cpuacct.usage")
-	usageStr, err := readCgroupFile(fullPath)
-	if err != nil {
-		return 0, err
-	}
-	usage, err := strconv.ParseUint(usageStr, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse CPU usage from %s: %w", fullPath, err)
-	}
-	return usage, nil
-}
+	info.CPUPeriod = fmt.Sprintf("%s microseconds", periodStr)
 
-// getCPUUsageV2 reads cumulative CPU usage from cpu.stat (microseconds)
-func getCPUUsageV2(unifiedPath string) (uint64, error) {
-	fullPath := filepath.Join(cgroupV2Root, unifiedPath, "cpu.stat")
-	statContent, err := readCgroupFile(fullPath)
-	if err != nil {
-		return 0, err
-	}
-	scanner := bufio.NewScanner(strings.NewReader(statContent))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "usage_usec") {
-			parts := strings.Fields(line)
-			if len(parts) == 2 {
-				usage, err := strconv.ParseUint(parts[1], 10, 64)
-				if err != nil {
-					return 0, fmt.Errorf("failed to parse usage_usec from %s: %w", fullPath, err)
-				}
-				return usage, nil
-			}
+	var maxValue int64
+	if maxValueStr == "max" {
+		info.CPUMax = "unlimited (max)"
+		info.BurstableCPUPercentage = "N/A (unlimited)"
+	} else {
+		maxValue, err = strconv.ParseInt(maxValueStr, 10, 64)
+		if err != nil {
+			info.Error = fmt.Sprintf("Error parsing max value from %s: %v", cpuMaxPath, err)
+			return info
+		}
+		info.CPUMax = fmt.Sprintf("%d microseconds", maxValue)
+
+		period, err := strconv.ParseInt(periodStr, 10, 64)
+		if err != nil {
+			info.Error = fmt.Sprintf("Error parsing period value from %s: %v", cpuMaxPath, err)
+			return info
+		}
+
+		if period > 0 {
+			burstablePercentage := float64(maxValue) / float64(period) * 100
+			info.BurstableCPUPercentage = fmt.Sprintf("%.2f%%", burstablePercentage)
+		} else {
+			info.BurstableCPUPercentage = "N/A (CPU period is zero)"
 		}
 	}
-	return 0, fmt.Errorf("usage_usec not found in cpu.stat at %s", fullPath)
+
+	// Read cpu.weight as well for v2
+	cpuWeightPath := filepath.Join(cgroupV2Mountpoint, cpuWeightV2Filename)
+	weightContent, err := ioutil.ReadFile(cpuWeightPath)
+	if err != nil {
+		info.CPUWeight = fmt.Sprintf("Error reading %s: %v", cpuWeightPath, err)
+	} else {
+		info.CPUWeight = strings.TrimSpace(string(weightContent))
+	}
+
+	return info
+}
+
+// getCPUMaxInfoV1 reads CPU limits from cgroup v1 files
+func getCPUMaxInfoV1() CgroupInfo {
+	info := CgroupInfo{CgroupVersion: "v1"}
+
+	quotaPath := filepath.Join(cgroupV1Mountpoint, cpuQuotaV1Filename)
+	periodPath := filepath.Join(cgroupV1Mountpoint, cpuPeriodV1Filename)
+	sharesPath := filepath.Join(cgroupV1Mountpoint, cpuSharesV1Filename)
+
+	quotaContent, err := ioutil.ReadFile(quotaPath)
+	if err != nil {
+		info.Error = fmt.Sprintf("Error reading %s: %v", quotaPath, err)
+		return info
+	}
+	periodContent, err := ioutil.ReadFile(periodPath)
+	if err != nil {
+		info.Error = fmt.Sprintf("Error reading %s: %v", periodPath, err)
+		return info
+	}
+	sharesContent, err := ioutil.ReadFile(sharesPath)
+	if err != nil {
+		info.CPUShares = fmt.Sprintf("Error reading %s: %v", sharesPath, err)
+	} else {
+		info.CPUShares = strings.TrimSpace(string(sharesContent))
+	}
+
+	quotaStr := strings.TrimSpace(string(quotaContent))
+	periodStr := strings.TrimSpace(string(periodContent))
+
+	period, err := strconv.ParseInt(periodStr, 10, 64)
+	if err != nil {
+		info.Error = fmt.Sprintf("Error parsing period value from %s: %v", periodPath, err)
+		return info
+	}
+	info.CPUPeriod = fmt.Sprintf("%d microseconds", period)
+
+	quota, err := strconv.ParseInt(quotaStr, 10, 64)
+	if err != nil {
+		info.Error = fmt.Sprintf("Error parsing quota value from %s: %v", quotaPath, err)
+		return info
+	}
+
+	if quota == -1 {
+		info.CPUMax = "unlimited (no quota)"
+		info.BurstableCPUPercentage = "N/A (unlimited)"
+	} else {
+		info.CPUMax = fmt.Sprintf("%d microseconds", quota)
+		if period > 0 {
+			burstablePercentage := float64(quota) / float64(period) * 100
+			info.BurstableCPUPercentage = fmt.Sprintf("%.2f%%", burstablePercentage)
+		} else {
+			info.BurstableCPUPercentage = "N/A (CPU period is zero)"
+		}
+	}
+
+	return info
+}
+
+// handler is the HTTP handler function for the root path "/"
+func handler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Received request from %s for %s", r.RemoteAddr, r.URL.Path)
+
+	cgroupVersion := detectCgroupVersion()
+	var info CgroupInfo
+
+	switch cgroupVersion {
+	case "v2":
+		info = getCPUMaxInfoV2()
+	case "v1":
+		info = getCPUMaxInfoV1()
+	default:
+		info.Error = "Could not detect cgroup version (v1 or v2). Ensure /sys/fs/cgroup is correctly mounted and accessible."
+		info.CgroupVersion = "unknown"
+	}
+
+	fmt.Fprintf(w, "<html><head><title>Container CPU Info</title>")
+	fmt.Fprintf(w, "<style>")
+	fmt.Fprintf(w, "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }")
+	fmt.Fprintf(w, "div { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); max-width: 600px; margin: auto; }")
+	fmt.Fprintf(w, "h1 { color: #0056b3; text-align: center; }")
+	fmt.Fprintf(w, "p { font-size: 1.1em; line-height: 1.6; }")
+	fmt.Fprintf(w, "strong { color: #007bff; }")
+	fmt.Fprintf(w, ".error { color: red; font-weight: bold; }")
+	fmt.Fprintf(w, "</style>")
+	fmt.Fprintf(w, "</head><body>")
+	fmt.Fprintf(w, "<div>")
+	fmt.Fprintf(w, "<h1>Container CPU Information</h1>")
+
+	if info.Error != "" {
+		fmt.Fprintf(w, "<p class=\"error\">Error: %s</p>", info.Error)
+	} else {
+		fmt.Fprintf(w, "<p><strong>Cgroup Version:</strong> %s</p>", info.CgroupVersion)
+		fmt.Fprintf(w, "<p><strong>CPU Max (burst) for container:</strong> %s</p>", info.CPUMax)
+		fmt.Fprintf(w, "<p><strong>CPU Period for container:</strong> %s</p>", info.CPUPeriod)
+		if info.BurstableCPUPercentage != "" {
+			fmt.Fprintf(w, "<p><strong>Burstable CPU Percentage:</strong> %s</p>", info.BurstableCPUPercentage)
+		}
+		if info.CgroupVersion == "v1" && info.CPUShares != "" {
+			fmt.Fprintf(w, "<p><strong>CPU Shares (v1):</strong> %s</p>", info.CPUShares)
+		}
+		if info.CgroupVersion == "v2" && info.CPUWeight != "" {
+			fmt.Fprintf(w, "<p><strong>CPU Weight (v2):</strong> %s</p>", info.CPUWeight)
+		}
+	}
+	fmt.Fprintf(w, "</div>")
+	fmt.Fprintf(w, "</body></html>")
 }
 
 func main() {
-	fmt.Println("--- Cgroup Information ---")
-
-	cgroupVer := detectCgroupVersion()
-	fmt.Printf("Detected Cgroup Version: %s\n", cgroupVer)
-
-	if cgroupVer == UnknownCgroup {
-		fmt.Println("Cannot determine cgroup version. Exiting.")
-		return
-	}
-
-	// Read /proc/self/cgroup to get the cgroup paths for the current process
-	f, err := os.Open("/proc/self/cgroup")
-	if err != nil {
-		fmt.Printf("Error opening /proc/self/cgroup: %v\n", err)
-		fmt.Println("This program needs to run in a Linux environment with cgroups enabled.")
-		return
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	cgroupPaths := make(map[string]string) // map of controller to relative path
-
-	fmt.Println("\n--- /proc/self/cgroup Content ---")
-	for scanner.Scan() {
-		line := scanner.Text()
-		fmt.Println(line)
-		controllers, path := parseCgroupLine(line)
-		if cgroupVer == CgroupV1 {
-			if strings.Contains(controllers, "cpu") {
-				cgroupPaths["cpu"] = path
-			}
-			if strings.Contains(controllers, "memory") {
-				cgroupPaths["memory"] = path
-			}
-		} else if cgroupVer == CgroupV2 {
-			// In v2, the path is unified. Store the first non-empty path found.
-			// The root cgroup path "/" is valid for cgroup v2.
-			if _, ok := cgroupPaths["unified"]; !ok {
-				cgroupPaths["unified"] = path
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading /proc/self/cgroup: %v\n", err)
-	}
-
-	fmt.Println("\n--- Resource Limits and Usage ---")
-
-	var cpuLimitCores float64 = -1.0 // Initialize with -1 to indicate no limit found
-
-	if cgroupVer == CgroupV1 {
-		if cpuPath, ok := cgroupPaths["cpu"]; ok {
-			fmt.Println("\nCPU (cgroup v1):")
-			fullPath := filepath.Join(cgroupV1Root, "cpu", cpuPath)
-			if quotaStr, err := readCgroupFile(filepath.Join(fullPath, "cpu.cfs_quota_us")); err == nil {
-				if val, err := strconv.ParseInt(quotaStr, 10, 64); err == nil {
-					if val != -1 {
-						if periodStr, err := readCgroupFile(filepath.Join(fullPath, "cpu.cfs_period_us")); err == nil {
-							if period, err := strconv.ParseInt(periodStr, 10, 64); err == nil && period > 0 {
-								cpuLimitCores = float64(val) / float64(period)
-								fmt.Printf("  CPU Quota (microseconds): %s\n", quotaStr)
-								fmt.Printf("  CPU Period (microseconds): %s\n", periodStr)
-								fmt.Printf("  Equivalent CPU Cores Limit: %.2f\n", cpuLimitCores)
-							}
-						}
-					} else {
-						fmt.Printf("  CPU Quota: %s (No explicit limit)\n", quotaStr)
-					}
-				}
-			}
-
-			// Calculate CPU Utilization
-			usage1, err1 := getCPUUsageV1(cpuPath)
-			if err1 != nil {
-				fmt.Printf("  Error getting initial CPU usage: %v\n", err1)
-			} else {
-				fmt.Printf("  Initial CPU Usage (cumulative nanoseconds): %d\n", usage1)
-				fmt.Printf("  Sampling CPU utilization for %s...\n", samplePeriod)
-				time.Sleep(samplePeriod)
-				usage2, err2 := getCPUUsageV1(cpuPath)
-				if err2 != nil {
-					fmt.Printf("  Error getting second CPU usage: %v\n", err2)
-				} else {
-					cpuDelta := float64(usage2 - usage1)             // in nanoseconds
-					timeDelta := float64(samplePeriod.Nanoseconds()) // in nanoseconds
-
-					// CPU usage in cores = (CPU_delta_nanoseconds / time_delta_nanoseconds)
-					actualCPUUsageCores := cpuDelta / timeDelta
-					fmt.Printf("  Current CPU Usage (cores): %.4f\n", actualCPUUsageCores)
-
-					if cpuLimitCores > 0 {
-						utilization := (actualCPUUsageCores / cpuLimitCores) * 100
-						fmt.Printf("  CPU Utilization of Limit: %.2f%%\n", utilization)
-					} else {
-						fmt.Println("  Cannot calculate CPU Utilization of Limit: CPU limit not found or is unlimited.")
-					}
-				}
-			}
-
-			if stat, err := readCgroupFile(filepath.Join(fullPath, "cpu.stat")); err == nil {
-				fmt.Printf("  CPU Stat:\n%s\n", indent(stat, "    "))
-			}
-		} else {
-			fmt.Println("CPU cgroup path not found for v1.")
-		}
-
-		if memPath, ok := cgroupPaths["memory"]; ok {
-			fmt.Println("\nMemory (cgroup v1):")
-			fullPath := filepath.Join(cgroupV1Root, "memory", memPath)
-			if limit, err := readCgroupFile(filepath.Join(fullPath, "memory.limit_in_bytes")); err == nil {
-				if val, _ := strconv.ParseUint(limit, 10, 64); val > 0 && val != 9223372036854771712 { // 9223372036854771712 is common for no limit
-					fmt.Printf("  Memory Limit: %s bytes (%.2f MiB)\n", limit, bytesToMiB(val))
-				} else {
-					fmt.Printf("  Memory Limit: %s bytes (No explicit limit or very large)\n", limit)
-				}
-			}
-			if usage, err := readCgroupFile(filepath.Join(fullPath, "memory.usage_in_bytes")); err == nil {
-				if val, _ := strconv.ParseUint(usage, 10, 64); val > 0 {
-					fmt.Printf("  Memory Usage: %s bytes (%.2f MiB)\n", usage, bytesToMiB(val))
-				}
-			}
-			if stat, err := readCgroupFile(filepath.Join(fullPath, "memory.stat")); err == nil {
-				fmt.Printf("  Memory Stat:\n%s\n", indent(stat, "    "))
-			}
-		} else {
-			fmt.Println("Memory cgroup path not found for v1.")
-		}
-
-	} else if cgroupVer == CgroupV2 {
-		if unifiedPath, ok := cgroupPaths["unified"]; ok {
-			fmt.Println("\nCPU (cgroup v2):")
-			fullPath := filepath.Join(cgroupV2Root, unifiedPath)
-			if max, err := readCgroupFile(filepath.Join(fullPath, "cpu.max")); err == nil {
-				parts := strings.Fields(max)
-				if len(parts) == 2 {
-					quota, _ := strconv.ParseInt(parts[0], 10, 64)
-					period, _ := strconv.ParseInt(parts[1], 10, 64)
-					fmt.Printf("  CPU Max (quota period): %s (quota: %s us, period: %s us)\n", max, parts[0], parts[1])
-					if quota != -1 && period > 0 {
-						cpuLimitCores = float64(quota) / float64(period)
-						fmt.Printf("  Equivalent CPU Cores Limit: %.2f\n", cpuLimitCores)
-					}
-				} else {
-					fmt.Printf("  CPU Max: %s\n", max)
-				}
-			}
-
-			// Calculate CPU Utilization
-			usage1, err1 := getCPUUsageV2(unifiedPath)
-			if err1 != nil {
-				fmt.Printf("  Error getting initial CPU usage: %v\n", err1)
-			} else {
-				fmt.Printf("  Initial CPU Usage (cumulative microseconds): %d\n", usage1)
-				fmt.Printf("  Sampling CPU utilization for %s...\n", samplePeriod)
-				time.Sleep(samplePeriod)
-				usage2, err2 := getCPUUsageV2(unifiedPath)
-				if err2 != nil {
-					fmt.Printf("  Error getting second CPU usage: %v\n", err2)
-				} else {
-					cpuDelta := float64(usage2 - usage1)              // in microseconds
-					timeDelta := float64(samplePeriod.Microseconds()) // in microseconds
-
-					// CPU usage in cores = (CPU_delta_microseconds / time_delta_microseconds)
-					actualCPUUsageCores := cpuDelta / timeDelta
-					fmt.Printf("  Current CPU Usage (cores): %.4f\n", actualCPUUsageCores)
-
-					if cpuLimitCores > 0 {
-						utilization := (actualCPUUsageCores / cpuLimitCores) * 100
-						fmt.Printf("  CPU Utilization of Limit: %.2f%%\n", utilization)
-					} else {
-						fmt.Println("  Cannot calculate CPU Utilization of Limit: CPU limit not found or is unlimited.")
-					}
-				}
-			}
-
-			if stat, err := readCgroupFile(filepath.Join(fullPath, "cpu.stat")); err == nil {
-				fmt.Printf("  CPU Stat:\n%s\n", indent(stat, "    "))
-			}
-
-			fmt.Println("\nMemory (cgroup v2):")
-			if max, err := readCgroupFile(filepath.Join(fullPath, "memory.max")); err == nil {
-				if val, _ := strconv.ParseUint(max, 10, 64); val > 0 && max != "max" {
-					fmt.Printf("  Memory Limit: %s bytes (%.2f MiB)\n", max, bytesToMiB(val))
-				} else {
-					fmt.Printf("  Memory Limit: %s (No explicit limit or very large)\n", max)
-				}
-			}
-			if current, err := readCgroupFile(filepath.Join(fullPath, "memory.current")); err == nil {
-				if val, _ := strconv.ParseUint(current, 10, 64); val > 0 {
-					fmt.Printf("  Memory Usage: %s bytes (%.2f MiB)\n", current, bytesToMiB(val))
-				}
-			}
-			if stat, err := readCgroupFile(filepath.Join(fullPath, "memory.stat")); err == nil {
-				fmt.Printf("  Memory Stat:\n%s\n", indent(stat, "    "))
-			}
-		} else {
-			fmt.Println("Unified cgroup path not found for v2.")
-		}
-	}
-}
-
-// indent adds a prefix to each line of a string
-func indent(s, prefix string) string {
-	lines := strings.Split(s, "\n")
-	for i := range lines {
-		lines[i] = prefix + lines[i]
-	}
-	return strings.Join(lines, "\n")
+	http.HandleFunc("/", handler) // Register the handler function for the root path
+	log.Printf("Server starting on port %s", port)
+	log.Fatal(http.ListenAndServe(port, nil)) // Start the HTTP server
 }
