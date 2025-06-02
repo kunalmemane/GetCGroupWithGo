@@ -6,6 +6,8 @@ WORKDIR /app
 # Copy the Go source file into the builder stage
 COPY main.go .
 
+RUN echo "Pausing Docker BUILD for 5 minutes..." && sleep 300 && echo "Resuming Docker BUILD."
+
 # Build the Go application
 # -o cgroup_info: Specifies the output executable name
 # -ldflags "-s -w": Reduces the size of the executable by omitting debug information
