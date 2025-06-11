@@ -13,7 +13,7 @@ import (
 
 const (
 	// Common cgroup mount point for v2 
-	cgroupV2Mountpoint = "/sys/fs/cgroup" 
+	cgroupV2Mountpoint = "/sys/fs/cgroup"  
 	// Typical cgroup mount point for v1 CPU controller 
 	cgroupV1Mountpoint = "/sys/fs/cgroup/cpu,cpuacct" 
 
