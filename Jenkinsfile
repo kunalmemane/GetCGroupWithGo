@@ -13,7 +13,7 @@ metadata:
 spec:
   containers:
   - name: go-builder
-    image: registry.redhat.io/ubi9/go-toolset:latest # <<< IMPORTANT: Ensure this image is available and correct for your cluster
+    image: registry.redhat.io/ubi9/go-toolset:1.18 # <<< IMPORTANT: Ensure this image is available and correct for your cluster
     command: ['cat']
     tty: true
 """
@@ -49,6 +49,7 @@ spec:
             steps {
                 script {
                     openshift.withProject(env.OC_PROJECT) { // Switch to your Go app's OpenShift project
+                        echo "using project ${env.OC_PROJECT}"
                         echo "Starting OpenShift S2I build for ${env.OC_BUILD_CONFIG} in project ${env.OC_PROJECT}..."
                         // Trigger the BuildConfig defined earlier.
                         // '--from-dir=.' tells the build to use the current Jenkins workspace as source.
