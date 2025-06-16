@@ -10,7 +10,7 @@ pipeline {
             spec: 
               containers: 
                 - name: go-builder 
-                  image: golang
+                  image: image-registry.openshift-image-registry.svc:5000/openshift/golang:1.18-ubi9
                   command: 
                     - cat 
                   tty: true 
