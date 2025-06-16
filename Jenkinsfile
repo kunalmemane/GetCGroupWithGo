@@ -80,31 +80,25 @@ pipeline {
       steps {
         container('go-builder') {
           script {
-            // Debugging: Print out the parameter values being used
             echo "DEBUG: Building with APP_NAME: ${params.APP_NAME}, NAMESPACE: ${params.NAMESPACE}, IMAGE_TAG: ${params.IMAGE_TAG}"
 
             openshift.withCluster() {
               openshift.withProject("${params.NAMESPACE}") {
-                // IMPORTANT: The 'oc new-build' command should ideally be run only once, outside the Jenkinsfile
-                // (e.g., via oc apply -f go-app-build-config.yaml).
-                // If you already have your 'my-go-app-build' BuildConfig, you just need to trigger it.
-                // The 'if' condition below would create a BuildConfig named 'my-go-app' if it doesn't exist,
-                // which might be different from your existing 'my-go-app-build'.
-                // If you intend for Jenkins to CREATE the BuildConfig, ensure 'params.APP_NAME'
-                // exactly matches the name you want the BuildConfig to have (e.g., 'my-go-app').
-                // If not, remove the 'if' block and just use the openshift.selector to trigger.
+                // ** LOGIC HERE TO CREATE BUILDCONFIG IF IT DOES NOT EXIST **
+                if (!openshift.selector("bc", params.APP_NAME).exists()) {
+                  echo "BuildConfig '${params.APP_NAME}' not found. Creating it via 'oc new-build'..."
+                  // Create the BuildConfig. Ensure this builder image is the desired one and accessible.
+                  // This will create a BuildConfig named after params.APP_NAME (e.g., 'my-go-app').
+                  sh "oc new-build --name=${params.APP_NAME} --image=registry.access.redhat.com/ubi8/go-toolset --binary=true --strategy=source --to=${params.APP_NAME}:${params.IMAGE_TAG}"
+                  echo "BuildConfig '${params.APP_NAME}' created successfully."
+                } else {
+                  echo "BuildConfig '${params.APP_NAME}' already exists. Proceeding with build."
+                }
 
-                // For simplicity and to match previous steps where you applied 'go-app-build-config.yaml',
-                // we will assume the BuildConfig already exists and just trigger it.
-                // If you truly want to create it on the fly, uncomment the 'if' block and ensure consistency.
-
-                // if (!openshift.selector("bc", params.APP_NAME).exists()) {
-                //   // This command creates a BuildConfig named 'params.APP_NAME' (e.g., 'my-go-app')
-                //   sh "oc new-build --name=${params.APP_NAME} --image=registry.access.redhat.com/ubi8/go-toolset --binary=true --strategy=source --to=${params.APP_NAME}:${params.IMAGE_TAG}"
-                // }
-
-                // Trigger the existing BuildConfig. Use params.APP_NAME as the BuildConfig name.
-                openshift.selector("bc", params.APP_NAME).startBuild("--from-dir=.").logs()
+                // Trigger the build using the OpenShift Jenkins plugin DSL
+                def build = openshift.selector("bc", params.APP_NAME).startBuild("--from-dir=.")
+                build.logs() // Stream logs to Jenkins console
+                build.untilCompletion() // Wait for the build to finish
                 echo "OpenShift BuildConfig '${params.APP_NAME}' build completed."
               }
             }
