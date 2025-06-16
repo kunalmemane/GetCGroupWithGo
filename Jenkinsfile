@@ -51,6 +51,18 @@ pipeline {
     //   }
     // }
 
+
+
+    Child Stage
+    stage('Check OC version') {
+      steps {
+        container('go-builder') {
+          sh 'oc version'
+        }
+      }
+    }
+
+
     //Child Stage
     stage('Check BuildConfig') {
       steps {
@@ -62,8 +74,6 @@ pipeline {
 
               def bc = openshift.selector("bc", BUILDCONFIG_NAME)
               echo "${bc}"
-
-
 
               if (bc.exists()) {
                 echo "✅ BuildConfig '${BUILDCONFIG_NAME}' exists in project '${PROJECT_NAME}'."
