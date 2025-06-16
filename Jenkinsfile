@@ -13,7 +13,7 @@ metadata:
 spec:
   containers:
   - name: go-builder
-    image: registry.redhat.io/ubi9/go-toolset:1.18 # <<< IMPORTANT: Ensure this image is available and correct for your cluster
+    image: registry.redhat.io/ubi8/go-toolset:1.18 # <<< IMPORTANT: Ensure this image is available and correct for your cluster
     command: ['cat']
     tty: true
 """
