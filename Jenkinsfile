@@ -20,6 +20,10 @@ pipeline {
                   volumes: 
                     - name: workspace-volume 
                       emptyDir: {} 
+                  securityContext:
+                      runAsUser: 1000 
+                      runAsGroup: 1000
+                      allowPrivilegeEscalation: false 
               ''' 
     } 
   }
@@ -38,6 +42,7 @@ pipeline {
   environment { 
       REGISTRY = "image-registry.openshift-image-registry.svc:5000" 
       IMAGE      = "${REGISTRY}/${params.NAMESPACE}/${params.APP_NAME}:${params.IMAGE_TAG}" 
+      GOCACHE = "/tmp/go-build"
   }
   
   stages { 
