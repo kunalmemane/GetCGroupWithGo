@@ -12,7 +12,7 @@ pipeline {
                 - name: go-builder
                   # IMPORTANT: Verify this image tag exists in your 'openshift' namespace's 'golang' ImageStream
                   # For example: oc get is golang -n openshift -o yaml
-                  image: image-registry.openshift-image-registry.svc:5000/openshift/golang:1.20-ubi9
+                  image: image-registry.openshift-image-registry.svc:5000/openshift/golang:1.18-ubi9
                   command:
                     - cat
                   tty: true
