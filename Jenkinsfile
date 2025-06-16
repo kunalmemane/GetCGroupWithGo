@@ -53,7 +53,7 @@ pipeline {
 
 
 
-    Child Stage
+//    Child Stage
     stage('Check OC version') {
       steps {
         container('go-builder') {
