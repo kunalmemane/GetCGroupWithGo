@@ -104,7 +104,7 @@ pipeline {
                 // }
 
                 // Trigger the existing BuildConfig. Use params.APP_NAME as the BuildConfig name.
-                openshift.selector("bc", params.APP_NAME).startBuild("--from-dir=.", "--follow", "--wait")
+                openshift.selector("bc", params.APP_NAME).startBuild("--from-dir=.").logs()
                 echo "OpenShift BuildConfig '${params.APP_NAME}' build completed."
               }
             }
