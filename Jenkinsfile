@@ -60,13 +60,17 @@ pipeline {
 
               echo "Looking for '${BUILDCONFIG_NAME}' if it exists in project '${PROJECT_NAME}'."
 
-              // def bc = openshift.selector("bc", BUILDCONFIG_NAME)
-              // if (bc.exists()) {
-              //   echo "✅ BuildConfig '${BUILDCONFIG_NAME}' exists in project '${PROJECT_NAME}'."
-              // } else {
-              //   echo "❌ BuildConfig '${BUILDCONFIG_NAME}' does NOT exist in project '${PROJECT_NAME}'."
-              //   error("BuildConfig '${BUILDCONFIG_NAME}' not found.")
-              // }
+              def bc = openshift.selector("bc", BUILDCONFIG_NAME)
+              echo "${bc}"
+
+
+
+              if (bc.exists()) {
+                echo "✅ BuildConfig '${BUILDCONFIG_NAME}' exists in project '${PROJECT_NAME}'."
+              } else {
+                echo "❌ BuildConfig '${BUILDCONFIG_NAME}' does NOT exist in project '${PROJECT_NAME}'."
+                error("BuildConfig '${BUILDCONFIG_NAME}' not found.")
+              }
             }
           }
         }
