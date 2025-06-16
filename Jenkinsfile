@@ -31,6 +31,8 @@ pipeline {
   }
 
   stages {
+
+    //Child Stage
     stage('Checkout') {
       steps {
         checkout scm
@@ -38,6 +40,7 @@ pipeline {
       }
     }
 
+    //Child Stage
     // stage('Build binary') {
     //   steps {
     //     container('go-builder') {
@@ -48,24 +51,27 @@ pipeline {
     //   }
     // }
 
-  stage('Check BuildConfig') {
-              steps {
-                  script {
-                      openshift.withCluster() {
-                          openshift.withProject(PROJECT_NAME) {
-                              def bc = openshift.selector("bc", BUILDCONFIG_NAME)
-                              if (bc.exists()) {
-                                  echo "✅ BuildConfig '${BUILDCONFIG_NAME}' exists in project '${PROJECT_NAME}'."
-                              } else {
-                                  echo "❌ BuildConfig '${BUILDCONFIG_NAME}' does NOT exist in project '${PROJECT_NAME}'."
-                                  error("BuildConfig '${BUILDCONFIG_NAME}' not found.")
-                              }
-                          }
-                      }
-                  }
+    //Child Stage
+    stage('Check BuildConfig') {
+      steps {
+        script {
+          openshift.withCluster() {
+            openshift.withProject(PROJECT_NAME) {
+              def bc = openshift.selector("bc", BUILDCONFIG_NAME)
+              if (bc.exists()) {
+                echo "✅ BuildConfig '${BUILDCONFIG_NAME}' exists in project '${PROJECT_NAME}'."
+              } else {
+                echo "❌ BuildConfig '${BUILDCONFIG_NAME}' does NOT exist in project '${PROJECT_NAME}'."
+                error("BuildConfig '${BUILDCONFIG_NAME}' not found.")
               }
-  }
+            }
+          }
+        }
+      }
+    }
 
+  // Finish parent stage
+  }
 
   post {
       success {
