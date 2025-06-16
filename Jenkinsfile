@@ -76,29 +76,34 @@ pipeline {
       }
     }
 
-    stage('Build & Push Image') {
+       stage('Build & Push Image') {
       steps {
         container('go-builder') {
           script {
-            echo "DEBUG: Building with APP_NAME: ${params.APP_NAME}, NAMESPACE: ${params.NAMESPACE}, IMAGE_TAG: ${params.IMAGE_TAG}"
+            // ** DEBUGGING: Print parameter values explicitly right before use **
+            echo "DEBUG: Parameter APP_NAME for selector is: '${params.APP_NAME}'"
+            echo "DEBUG: Parameter NAMESPACE for selector is: '${params.NAMESPACE}'"
 
             openshift.withCluster() {
               openshift.withProject("${params.NAMESPACE}") {
-                // ** LOGIC HERE TO CREATE BUILDCONFIG IF IT DOES NOT EXIST **
-                if (!openshift.selector("bc", params.APP_NAME).exists()) {
+                // ** ATTEMPT 1: Original syntax with explicit cast **
+                def bcSelector = openshift.selector("bc", params.APP_NAME as String) // Cast to String
+                
+                // ** ATTEMPT 2: Alternative map-based syntax (uncomment to try if Attempt 1 fails) **
+                // def bcSelector = openshift.selector(kind: "bc", name: params.APP_NAME as String)
+
+                if (!bcSelector.exists()) {
                   echo "BuildConfig '${params.APP_NAME}' not found. Creating it via 'oc new-build'..."
-                  // Create the BuildConfig. Ensure this builder image is the desired one and accessible.
-                  // This will create a BuildConfig named after params.APP_NAME (e.g., 'my-go-app').
                   sh "oc new-build --name=${params.APP_NAME} --image=registry.access.redhat.com/ubi8/go-toolset --binary=true --strategy=source --to=${params.APP_NAME}:${params.IMAGE_TAG}"
                   echo "BuildConfig '${params.APP_NAME}' created successfully."
                 } else {
                   echo "BuildConfig '${params.APP_NAME}' already exists. Proceeding with build."
                 }
 
-                // Trigger the build using the OpenShift Jenkins plugin DSL
-                def build = openshift.selector("bc", params.APP_NAME).startBuild("--from-dir=.")
-                build.logs() // Stream logs to Jenkins console
-                build.untilCompletion() // Wait for the build to finish
+                // Use the selector object to start the build
+                def build = bcSelector.startBuild("--from-dir=.")
+                build.logs()
+                build.untilCompletion()
                 echo "OpenShift BuildConfig '${params.APP_NAME}' build completed."
               }
             }
