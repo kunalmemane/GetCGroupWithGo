@@ -20,10 +20,6 @@ pipeline {
                   volumes: 
                     - name: workspace-volume 
                       emptyDir: {} 
-                  securityContext:
-                      runAsUser: 1000 
-                      runAsGroup: 1000
-                      allowPrivilegeEscalation: false 
               ''' 
     } 
   }
