@@ -35,15 +35,15 @@ spec:
             }
         }
 
-        stage('Run Go Tests') {
-            steps {
-                container('go-builder') { // Execute these steps inside the 'go-builder' container of the agent pod
-                    sh 'go mod tidy' // Ensure dependencies are in sync
-                    // sh 'go test ./...' // Run your Go unit tests
-                    echo "Go tests completed successfully."
-                }
-            }
-        }
+        // stage('Run Go Tests') {
+        //     steps {
+        //         container('go-builder') { // Execute these steps inside the 'go-builder' container of the agent pod
+        //             sh 'go mod tidy' // Ensure dependencies are in sync
+        //             // sh 'go test ./...' // Run your Go unit tests
+        //             echo "Go tests completed successfully."
+        //         }
+        //     }
+        // }
 
         stage('Trigger OpenShift S2I Build') {
             steps {
