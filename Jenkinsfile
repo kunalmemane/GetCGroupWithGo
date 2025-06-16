@@ -10,7 +10,7 @@ pipeline {
             spec: 
               containers: 
                 - name: go-builder 
-                  image: golang:1.21 
+                  image: golang
                   command: 
                     - cat 
                   tty: true 
