@@ -1,110 +1,95 @@
-// Jenkinsfile
-pipeline {
-    agent {
-        kubernetes {
-            // Jenkins will dynamically provision a pod on OpenShift for this pipeline.
-            // This pod needs the Go toolset to run 'go test'.
-            // Use an S2I builder image that has Go installed.
-            yaml """
-kind: Pod
-metadata:
-  labels:
-    app: jenkins-go-agent
-spec:
-  containers:
-  - name: go-builder
-    image: registry.redhat.io/ubi8/go-toolset:1.18 # <<< IMPORTANT: Ensure this image is available and correct for your cluster
-    command: ['cat']
-    tty: true
-"""
-        }
-    }
-    environment {
-        // Define environment variables for your OpenShift project and resource names
-        OC_PROJECT = 'my-go-app-dev'
-        OC_BUILD_CONFIG = 'my-go-app-build'
-        OC_DEPLOYMENT = 'my-go-app' // Name of your Kubernetes Deployment
-    }
-    stages {
-        stage('Checkout Source Code') {
-            steps {
-                script {
-                    checkout scm // Checks out the code from the Git repository linked to this Jenkins job
-                    echo "Source code checked out from ${env.GIT_URL} at branch ${env.GIT_BRANCH}"
-                }
+pipeline { 
+    agent { 
+        kubernetes { 
+            yaml 
+            ''' apiVersion: v1 kind: Pod spec: containers: - name: go-builder image: golang:1.21 command: - cat tty: true volumeMounts: - name: workspace-volume mountPath: /workspace volumes: - name: workspace-volume emptyDir: {} ''' 
+            } 
             }
-        }
-
-        // stage('Run Go Tests') {
-        //     steps {
-        //         container('go-builder') { // Execute these steps inside the 'go-builder' container of the agent pod
-        //             sh 'go mod tidy' // Ensure dependencies are in sync
-        //             // sh 'go test ./...' // Run your Go unit tests
-        //             echo "Go tests completed successfully."
-        //         }
-        //     }
-        // }
-
-        stage('Trigger OpenShift S2I Build') {
-            steps {
-                script {
-                    openshift.withProject(env.OC_PROJECT) { // Switch to your Go app's OpenShift project
-                        echo "using project ${env.OC_PROJECT}"
-                        echo "Starting OpenShift S2I build for ${env.OC_BUILD_CONFIG} in project ${env.OC_PROJECT}..."
-                        // Trigger the BuildConfig defined earlier.
-                        // '--from-dir=.' tells the build to use the current Jenkins workspace as source.
-                        def build = openshift.build(env.OC_BUILD_CONFIG).start('--from-dir=.')
-                        build.logs() // Stream build logs to the Jenkins console
-                        build.untilCompletion() // Wait for the OpenShift build to complete
-                        echo "OpenShift build completed successfully for ${env.OC_BUILD_CONFIG}."
-                    }
-                }
-            }
-        }
-
-        stage('Deploy Application') {
-            steps {
-                script {
-                    openshift.withProject(env.OC_PROJECT) {
-                        echo "Waiting for rollout of Deployment '${env.OC_DEPLOYMENT}' to complete..."
-                        // For Kubernetes Deployments, OpenShift's ImageStream controller
-                        // will automatically update the Deployment's image when a new image
-                        // is pushed to the ImageStream (by the S2I build).
-                        // We then wait for the rollout initiated by that image change to complete.
-                        sh "oc rollout status deployment/${env.OC_DEPLOYMENT} --namespace=${env.OC_PROJECT} --timeout=10m"
-                        echo "Deployment rollout for ${env.OC_DEPLOYMENT} completed successfully."
-                    }
-                }
-            }
-        }
-
-        stage('Verify Deployment (Optional)') {
-            steps {
-                script {
-                    openshift.withProject(env.OC_PROJECT) {
-                        // Get the route URL for your application
-                        def route = openshift.selector('route', env.OC_DEPLOYMENT).object()
-                        def app_url = "http://${route.spec.host}"
-                        echo "Application URL: ${app_url}"
-                        // Perform a simple curl request to check if the app is reachable
-                        sh "curl -s -f ${app_url}"
-                        echo "Application is reachable and responding!"
-                    }
-                }
-            }
-        }
+options 
+{ 
+    ansiColor('xterm') timestamps() buildDiscarder(logRotator(numToKeepStr: '10')) 
+}
+parameters { 
+    string(name: 'APP_NAME', defaultValue: 'my-go-app-dev', description: 'Name of the OpenShift application') 
+    string(name: 'NAMESPACE', defaultValue: 'my-go-app-dev', description: 'OpenShift project/namespace') 
+    string(name: 'IMAGE_TAG', defaultValue: "build-${env.BUILD_NUMBER}", description: 'Image tag to push and deploy') 
     }
-    post {
-        always {
-            cleanWs() // Clean up the Jenkins workspace after the pipeline finishes
-        }
-        failure {
-            echo "Pipeline failed! Check the logs for errors."
-            // Add notification steps here (e.g., send email, Slack message)
-        }
-        success {
-            echo "Pipeline succeeded! Go application deployed to OpenShift."
-            // Add notification steps here
-        }
+environment { 
+    REGISTRY = "image-registry.openshift-image-registry.svc:5000" 
+    IMAGE      = "${REGISTRY}/${params.NAMESPACE}/${params.APP_NAME}:${params.IMAGE_TAG}" 
     }
+stages { 
+    stage('Checkout') 
+    { 
+        steps { checkout scm } 
+    }
+stage('Unit tests') {
+  steps {
+    container('go-builder') {
+      sh 'go test ./...'
+    }
+  }
+}
+stage('Build binary') {
+  steps {
+    container('go-builder') {
+      sh 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/${APP_NAME} .'
+    }
+  }
+}
+stage('Build & Push Image') {
+  steps {
+    container('go-builder') {
+      script {
+        openshift.withCluster() {
+          openshift.withProject("${params.NAMESPACE}") {
+            if (!openshift.selector("bc", params.APP_NAME).exists()) {
+              sh "oc new-build --name=${params.APP_NAME} --image=registry.access.redhat.com/ubi8/go-toolset --binary=true --strategy=source --to=${params.APP_NAME}:${params.IMAGE_TAG}"
+            }
+            openshift.selector("bc", params.APP_NAME).startBuild("--from-dir=.", "--follow", "--wait")
+          }
+        }
+      }
+    }
+  }
+}
+stage('Tag image as latest') {
+  steps {
+    container('go-builder') {
+      script {
+        openshift.withCluster() {
+          openshift.withProject("${params.NAMESPACE}") {
+            sh "oc tag ${params.NAMESPACE}/${params.APP_NAME}:${params.IMAGE_TAG} ${params.NAMESPACE}/${params.APP_NAME}:latest --overwrite"
+          }
+        }
+      }
+    }
+  }
+}
+stage('Deploy to OpenShift') {
+  steps {
+    container('go-builder') {
+      script {
+        openshift.withCluster() {
+          openshift.withProject("${params.NAMESPACE}") {
+            if (!openshift.selector("dc", params.APP_NAME).exists()) {
+              sh "oc new-app --name=${params.APP_NAME} --image=${IMAGE} --port=8080"
+              sh "oc expose svc/${params.APP_NAME}"
+            } else {
+              sh "oc set image dc/${params.APP_NAME} ${params.APP_NAME}=${IMAGE} --overwrite"
+            }
+            openshift.selector("dc", params.APP_NAME).rollout().status("-w")
+          }
+        }
+      }
+    }
+  }
+}
+}
+post { 
+    success 
+    { echo ":white_check_mark: Deployment successful!" } 
+    failure 
+    { echo ":x: Build or deployment failed." } 
+    } 
 }
