@@ -61,6 +61,10 @@ pipeline {
     stage('Build binary') {
       steps {
         container('go-builder') {
+          sh 'mkdir -p /opt/app-root/src /tmp/src && \
+              chown -R 1001:0 /opt/app-root /tmp/src'
+          sh 'mkdir /.cache'
+          sh 'chmod -R 777 /.cache'
           sh 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/${APP_NAME} .'
         }
       }
