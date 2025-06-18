@@ -14,7 +14,7 @@ RUN echo "Pausing Docker BUILD for 15 minutes..." && sleep 600 && echo "Resuming
 RUN go build -o cgroup_info -ldflags "-s -w" main.go
 
 # Stage 2: Create the final, minimal image
-FROM alpine:latest
+FROM registry.access.redhat.com/ubi9/ubi:9.6-1749542372
 
 WORKDIR /app
 
