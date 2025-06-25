@@ -1,12 +1,11 @@
 # Stage 1: Build the Go application
-FROM golang:1.22-alpine AS builder
+FROM registry.access.redhat.com/ubi8/go-toolset:1.23.9-2.1749686543 AS builder
+
+COPY --chown=1001:0 . /app
 
 WORKDIR /app
 
-# Copy the Go source file into the builder stage
-COPY main.go .
-
-RUN echo "Pausing Docker BUILD for 15 minutes..." && sleep 600 && echo "Resuming Docker BUILD."
+RUN echo "Pausing Docker BUILD for 10 minutes..." && sleep 600 && echo "Resuming Docker BUILD."
 
 # Build the Go application
 # -o cgroup_info: Specifies the output executable name
