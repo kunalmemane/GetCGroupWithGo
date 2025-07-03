@@ -5,7 +5,7 @@ COPY --chown=1001:0 . /app
 
 WORKDIR /app
 
-RUN echo "Pausing Docker BUILD for 10 minutes..." && sleep 600 && echo "Resuming Docker BUILD."
+# RUN echo "Pausing Docker BUILD for 10 minutes..." && sleep 600 && echo "Resuming Docker BUILD."
 
 # Build the Go application
 # -o cgroup_info: Specifies the output executable name
